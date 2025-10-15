@@ -1,0 +1,42 @@
+const int echo_pin = 2;  // Utilisation de la broche 2 (INT0) pour l'interruption
+const int trig_pin = 11;
+volatile int duration;
+volatile int distance;
+
+void setup() {
+  pinMode(echo_pin, INPUT);
+  pinMode(trig_pin, OUTPUT);
+  Serial.begin(9600);
+  attachInterrupt(digitalPinToInterrupt(echo_pin), lireDistance, RISING);
+}
+
+void loop() {
+  digitalWrite(trig_pin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trig_pin, HIGH);
+  delayMicroseconds(20);
+  digitalWrite(trig_pin, LOW);
+  delay(100);
+  // Traitement de la durée dans la boucle principale
+  //duration=pulseIn(echo_pin,HIGH);
+  
+  if (duration > 0) {
+    distance = duration * 0.0343 / 2;
+    Serial.print("Distance: ");
+    Serial.print(distance);
+    Serial.println(" cm");
+    duration = 0;  // Réinitialiser la durée après le traitement
+  }
+  
+  delay(1000);
+}
+
+void lireDistance() {
+  // Mise à jour de la durée dans la fonction d'interruption
+  duration = micros();
+  while (digitalRead(echo_pin) == HIGH) {
+    // Attendez que le signal d'écho redescende
+  }
+  duration = micros() - duration;  // Calcul de la durée du signal écho
+  //duration=pulseIn(echo_pin,HIGH);
+}

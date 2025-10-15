@@ -1,0 +1,214 @@
+#include "Servo.h"
+#include <PID_v1_bc.h>
+
+#define TRIG_PIN_FRONT      A3
+#define ECHO_PIN_FRONT      A2
+#define MOTOR_PIN_DIRECT1   12
+#define MOTOR_PIN_DIRECT2   13
+#define MOTOR_PIN_SPEED1    4
+#define MOTOR_PIN_SPEED2    11
+#define encode1_pinA       2
+#define encode1_pinB        3
+#define encode2_pinA        18
+#define encode2_pinB        19
+#define Tick_per_rev       1632.67         // valeur du fabricant
+#define Tick_per_rev1      446           // valeur observée en testant
+#define Reduc_ratio        34
+#define Diametre_roue      6.5       // (en cm)
+#define pi                 3.14         
+#define perimetre_roue     21.7       // (en cm)
+
+// Define distances for obstacle detection
+#define MIN_DISTANCE_FRONT  20
+#define MIN_DISTANCE_SIDE   15
+
+// PID PARAMETERS
+double P=1.4;//1.02
+double I=5;
+double  D=1;
+volatile double encodeur1A=0;                // compteur tick encodeurA du moteur1
+volatile double encodeur1B=0;             // compteur tick encodeurB du moteur1 
+volatile double encodeur2A=0;            // compteur tick encodeurA du moteur2
+ volatile double encodeur2B=0;          // compteur tick encodeurB du moteur2
+double output1,consigne1,output2,consigne2;
+
+//Parametres  pour les fonctions d'interruption des encodeurs
+
+double speed1=0,speed2=0;
+volatile double distance1=0.0,distance2=0.0,tour_r1=0,tour_r2=0;      // distances parcourus et nombres de tours de roues
+
+// Function prototypes
+
+
+void moveForward(int speed1,int speed2);
+void moveBackward(int speed1, int speed2);
+void turnLeft(int speed1,int speed2);
+void turnRight(int speed1,int speed2);
+
+void servo_open();
+void servo_close();
+void stop();
+
+// PID pour les deux moteurs
+PID myPID1(&speed1,&output1,&consigne1,P,I,D,DIRECT);
+PID myPID2(&speed2,&output2,&consigne2,P,I,D,DIRECT);
+
+//servo moteur 
+Servo servo;
+
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(9600);
+   // mise en place  du mapping des entrées et sorties
+  pinMode(TRIG_PIN_FRONT, OUTPUT);
+  pinMode(ECHO_PIN_FRONT, INPUT);
+
+  pinMode(MOTOR_PIN_DIRECT1,OUTPUT);
+  pinMode(MOTOR_PIN_DIRECT2,OUTPUT);
+
+  pinMode(MOTOR_PIN_SPEED1,OUTPUT);
+  pinMode(MOTOR_PIN_SPEED2,OUTPUT);
+  
+  pinMode(encode1_pinA,INPUT);
+  pinMode(encode2_pinA,INPUT);
+
+  myPID1.SetMode(AUTOMATIC);            // parametrage du PID du moteur1
+  myPID1.SetSampleTime(50);
+  myPID1.SetOutputLimits(0, 128);
+
+  myPID2.SetMode(AUTOMATIC);           // parametrage du PID du moteur2
+  myPID2.SetSampleTime(50);
+  myPID2.SetOutputLimits(0, 128);
+
+  consigne1=960;
+  consigne2=960;
+
+  servo.attach(7);                         //attacher le pin 7 a la sortie servomoteur
+  
+
+  attachInterrupt(digitalPinToInterrupt(encode1_pinA),encode1,RISING);    // interruption sur l'encodeurA du moteur1 pour compter les ticks
+  attachInterrupt(digitalPinToInterrupt(encode2_pinA),encode2,RISING);    // interruption sur l'encodeurA du moteur 2 pour compter les ticks
+  
+
+}
+
+
+
+void loop() {
+  // put your main code here, to run repeatedly:
+  
+ 
+  if(distance1<=100)             // teste pour faire avancer d'un metre 
+  {
+   moveForward(128, 128);
+  
+  } 
+  else {
+  stop();
+  }
+  Serial.println("************************");         // afficher les nombres de tours et la distance sur le moniteur serie
+  Serial.print("encodeur1 :");
+  Serial.print(encodeur1B);  
+  Serial.print(",tour :");
+  Serial.print(tour_r1);  
+  Serial.print(", Distance :");
+  Serial.println(distance1); 
+
+
+
+}
+
+
+
+
+
+
+void moveForward(int speed1,int speed2) {         // fonction marche avant
+ 
+  digitalWrite(MOTOR_PIN_DIRECT1,LOW);
+  digitalWrite(MOTOR_PIN_DIRECT2,HIGH);
+  analogWrite(MOTOR_PIN_SPEED1,speed1);
+  analogWrite(MOTOR_PIN_SPEED2,speed2);
+  
+}
+
+void moveBackward(int speed1,int speed2) {      // fonction marche arriere
+  
+  digitalWrite(MOTOR_PIN_DIRECT1,HIGH);
+  digitalWrite(MOTOR_PIN_DIRECT2,LOW);
+  analogWrite(MOTOR_PIN_SPEED1,speed1);
+  analogWrite(MOTOR_PIN_SPEED2,speed2);
+ 
+}
+
+void turnRight(int speed1,int speed2) {          //fonction pour tourner a droite
+  
+  digitalWrite(MOTOR_PIN_DIRECT1,LOW);          
+  digitalWrite(MOTOR_PIN_DIRECT2,HIGH);
+  analogWrite(MOTOR_PIN_SPEED1,80);
+  analogWrite(MOTOR_PIN_SPEED2,10);
+  
+}
+
+void turnLeft(int speed1,int speed2) {              // fonction pour tourner a gauche
+  digitalWrite(MOTOR_PIN_DIRECT1,LOW);
+  digitalWrite(MOTOR_PIN_DIRECT2,HIGH);
+  analogWrite(MOTOR_PIN_SPEED1,10);
+  analogWrite(MOTOR_PIN_SPEED2,80);
+  
+}
+
+void stop() {                                          // arrete les moteurs
+ 
+  
+  analogWrite(MOTOR_PIN_SPEED1,0);
+  analogWrite(MOTOR_PIN_SPEED2,0);
+}
+
+
+
+
+void servo_open()             // fonction d'ouverture de la pince
+{
+  for(int j=180;j>=0;j--)
+  {
+    servo.write(j);
+    delay(10);
+  }
+}
+
+void servo_close()              // fermeture de la pince
+{
+  for(int j=0;j<=180;j++)
+  {
+    servo.write(j);
+    delay(10);
+  }
+}
+
+void encode1(void)              // fonction  interruption pour encodeur1A
+{
+  
+  if(digitalRead(encode1_pinB)==HIGH)      // si le moteur 1 avance
+  encodeur1A++;
+  else                                    // si il  recule
+   encodeur1A--;
+   
+   
+   tour_r1=encodeur1A/Tick_per_rev1;                   // nombre de tour de la roue 1
+   distance1=perimetre_roue*tour_r1 ;                 // distance de la roue en cm*/
+    
+}
+
+
+void encode2(void)                  // fonction  interruption pour encodeur2A
+{
+   if(digitalRead(encode2_pinB)==HIGH)      // si le moteur 2 avance
+  encodeur2A++;
+  else                                    // si il  recule
+   encodeur2A--;
+   
+   tour_r2=encodeur2A/Tick_per_rev;                  // nombre de tour de la roue 2
+   distance2=  perimetre_roue*tour_r2;              // distance de la roue en cm
+   
+}

@@ -1,0 +1,181 @@
+#include <Arduino_FreeRTOS.h>
+#include <task.h>
+
+// Define pin numbers for ultrasonic sensors
+#define TRIG_PIN_FRONT A3
+#define ECHO_PIN_FRONT A2
+#define MOTOR_PIN_DIRECT1  12
+#define MOTOR_PIN_FREIN1   9
+#define MOTOR_PIN_DIRECT2  13
+#define MOTOR_PIN_FREIN2   8
+#define MOTOR_PIN_SPEED1  3
+#define MOTOR_PIN_SPEED2  11
+#define encode_pin1        2
+#define encode_pin2        3
+// Define distances for obstacle detection
+#define MIN_DISTANCE_FRONT 20
+#define MIN_DISTANCE_SIDE 15
+// PID PARAMETERS
+float P=1.3;//1.02
+float I=0.005;
+float D=0.024;
+int encodeur=0;
+
+// Function prototypes
+void obstacleDetectionTask(void* pvParameters);
+void motorControlTask(void* pvParameters);
+void moveForward();
+void moveBackward();
+void turnLeft();
+void turnRight();
+void stop();
+float PID_Corrector(int target,float *LastError,float ederivative, float *eIntegral,float *LastTime);
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(TRIG_PIN_FRONT, OUTPUT);
+  pinMode(ECHO_PIN_FRONT, INPUT);
+  pinMode(MOTOR_PIN_DIRECT1,OUTPUT);
+  pinMode(MOTOR_PIN_DIRECT2,OUTPUT);
+  pinMode(MOTOR_PIN_SPEED1,OUTPUT);
+  pinMode(MOTOR_PIN_SPEED2,OUTPUT);
+  pinMode(MOTOR_PIN_FREIN1,OUTPUT);
+  pinMode(MOTOR_PIN_FREIN2,OUTPUT);
+  pinMode(encode_pin1,INPUT);
+  pinMode(encode_pin2,INPUT);
+
+  xTaskCreate(obstacleDetectionTask, "ObstacleDetection", 1000, NULL, 1, NULL);
+  xTaskCreate(motorControlTask, "MotorControl", 1000, NULL, 2, NULL);
+  attachInterrupt(digitalPinToInterrupt(encode_pin1),encode,RISING);
+
+  vTaskStartScheduler();
+}
+
+void loop() {
+  
+  //is should never be reached
+}
+
+void obstacleDetectionTask(void* pvParameters) {
+  (void) pvParameters;
+
+  while (1) {
+    long duration, distance;
+
+    // Front sensor
+    digitalWrite(TRIG_PIN_FRONT, LOW);
+    delayMicroseconds(2);
+    digitalWrite(TRIG_PIN_FRONT, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(TRIG_PIN_FRONT, LOW);
+    duration = pulseIn(ECHO_PIN_FRONT, HIGH);
+    distance = duration * 0.034 / 2;
+
+    if (distance < MIN_DISTANCE_FRONT) {
+      // Obstacle detected in front
+      // Implement avoidance strategy here
+    }
+
+    vTaskDelay(100); // Delay for sensor reading
+  }
+}
+
+void motorControlTask(void* pvParameters) {
+  (void) pvParameters;
+   float LastError=0,ederivative, eIntegral=0, LastTime=0;
+   digitalWrite(MOTOR_PIN_DIRECT2,LOW);
+   analogWrite(MOTOR_PIN_SPEED2,0);
+  while (1) {
+
+    // Implement motor control logic here
+    // Adjust motor speeds and directions based on obstacle detection
+    
+  
+   float u;
+    //vTaskDelay(2000/portTICK_PERIOD_MS);
+    u=PID_Corrector(1000, &LastError,ederivative, &eIntegral, &LastTime);
+    
+    if(abs(u)>255)
+      analogWrite(MOTOR_PIN_SPEED2,255);
+    else
+      analogWrite(MOTOR_PIN_SPEED2,abs(u));
+
+    
+    // vTaskDelay(100);
+  }
+}
+
+void moveForward() {
+  // Replace these with the actual pins on your shield
+  digitalWrite(MOTOR_PIN_DIRECT1,HIGH);
+  analogWrite(MOTOR_PIN_SPEED1,100);
+  digitalWrite(MOTOR_PIN_DIRECT2,LOW);
+  analogWrite(MOTOR_PIN_SPEED2,100);
+  digitalWrite(MOTOR_PIN_FREIN1,LOW);
+  digitalWrite(MOTOR_PIN_FREIN2,LOW);
+}
+
+void moveBackward() {
+  // Replace these with the actual pins on your shield
+  digitalWrite(MOTOR_PIN_DIRECT1,LOW);
+  analogWrite(MOTOR_PIN_SPEED1,100);
+  digitalWrite(MOTOR_PIN_DIRECT2,HIGH);
+  analogWrite(MOTOR_PIN_SPEED2,100);
+  digitalWrite(MOTOR_PIN_FREIN1,LOW);
+  digitalWrite(MOTOR_PIN_FREIN2,LOW);
+}
+
+void turnLeft() {
+  // Replace these with the actual pins on your shield
+  digitalWrite(MOTOR_PIN_DIRECT1,HIGH);
+  analogWrite(MOTOR_PIN_SPEED1,90);
+  digitalWrite(MOTOR_PIN_DIRECT1,HIGH);
+  analogWrite(MOTOR_PIN_SPEED2,90);
+  digitalWrite(MOTOR_PIN_FREIN1,LOW);
+  digitalWrite(MOTOR_PIN_FREIN2,LOW);
+}
+
+void turnRight() {
+  // Replace these with the actual pins on your shield
+  digitalWrite(MOTOR_PIN_DIRECT1,LOW);
+  analogWrite(MOTOR_PIN_SPEED1,90);
+  digitalWrite(MOTOR_PIN_DIRECT1,LOW);
+  analogWrite(MOTOR_PIN_SPEED2,90);
+  digitalWrite(MOTOR_PIN_FREIN1,LOW);
+  digitalWrite(MOTOR_PIN_FREIN2,LOW);
+}
+
+void stop() {
+  // Replace these with the actual pins on your shield
+  digitalWrite(MOTOR_PIN_FREIN1,HIGH);
+  digitalWrite(MOTOR_PIN_FREIN2,HIGH);
+  analogWrite(MOTOR_PIN_SPEED1,0);
+  analogWrite(MOTOR_PIN_SPEED2,0);
+}
+void encode(void)
+{
+ // if(digitalRead(encode_pin2)<digitalRead(encode_pin1))
+   encodeur++;
+  ///else
+    //encodeur--;
+}
+
+float PID_Corrector(int target,float *LastError,float ederivative, float *eIntegral,float *LastTime)
+{
+    float time=micros();             // present time
+    float delta_time=(time -*LastTime)/1e6;          //  delta t
+    *LastTime=time;
+    int e=target-encodeur;   
+    Serial.print("1000,");
+    Serial.println(encodeur);                  // erreur 
+    ederivative=(e-*LastError)/delta_time;            // Derivée 
+    *eIntegral+= e*delta_time;                        // Integral
+
+    float u= P*e + I*(*eIntegral) + D*(ederivative);
+    *LastError=e;
+    Serial.print("correction:");
+    Serial.println(abs(u));
+     return  u;                                      // OUTPUT
+
+}

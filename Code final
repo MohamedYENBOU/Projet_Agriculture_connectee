@@ -1,0 +1,1350 @@
+#include <NewPing.h>
+#include "Servo.h"
+#include<math.h>
+#define TRIG_PIN_FRONT      8                            // pins du capteur1
+#define ECHO_PIN_FRONT      9
+#define TRIG_PIN_FRONT1      10                         // pins du capteur2
+#define ECHO_PIN_FRONT1      6
+#define MOTOR_PIN_DIRECT1   12                        // pin pour controler la direction du moteur 1
+#define MOTOR_PIN_DIRECT2   13                       // pin pour controler la direction du moteur2
+#define MOTOR_PIN_SPEED1    4                      // pin pour controler la vitesse du moteur 1
+#define MOTOR_PIN_SPEED2    11                        // pin pour controler la vitesse du moteur 2
+#define encode1_pinA        3                             // pin1 de l'encodeur 1
+#define encode1_pinB        2                             // pin2 de l'encodeur 1
+#define encode2_pinA        18                             // pin1 de l'encodeur 2
+#define encode2_pinB        19                              // pin1 de l'encodeur 2
+#define Tick_per_rev       1632.67                               // valeur du fabricant
+#define Tick_per_rev1      446                                  // valeur observée en testant
+#define Reduc_ratio        34
+#define Diametre_roue      6.5                                  // (en cm)
+#define pi                 3.14         
+#define perimetre_roue     21.7                                 // (en cm)
+#define degre_per_cm       6.1 // 5.49
+
+// Define distances for obstacle detection
+#define MIN_DISTANCE_SENSOR  10                                // distance  de detection du capteur
+#define MIN_DISTANCE_SIDE   15
+#define v_add               5                                 // vitesse d'incrementation du robot
+#define MAX_SPEED          140                               // vitesse maximale du robot
+
+// PID PARAMETERS
+double P=1.5;//1.02
+double I=0.0005;
+double  D=1;
+volatile double encodeur1A=0;                                         // compteur tick encodeurA du moteur1
+volatile double encodeur1B=0;                                        // compteur tick encodeurB du moteur1 
+volatile double encodeur2A=0;                                       // compteur tick encodeurA du moteur2
+ volatile double encodeur2B=0;                                     // compteur tick encodeurB du moteur2
+double output1,consigne1=250,output2,consigne2=250;
+double error=0.1;                                                 // l'erreur max  dans les distances
+volatile double capteur_distance,capteur_distance1;
+
+
+//Parametres  pour les fonctions d'interruption des encodeurs
+ double distance1=0.0,distance2=0.0,moyenne_distance=0.0;
+ volatile double tour_r1=0,tour_r2=0;                           // distances parcourus et nombres de tours de roues
+
+ // Coordonnées du robot
+ double xr=0;                                                  // abscisse
+ double yr=0;                                                  // ordonnées
+ double Or=0;
+
+// Function prototypes
+typedef struct position                   // structure pour  pour une position dans le plan
+{
+  double x;
+  double y;
+}position;
+
+position Robot_pos={xr,yr};                                                           // position du robot
+int  moveForward_X(double distance,int direct) ;                                     // deplacement sur l'axe des X
+int  moveForward_Y(double distance,int direct) ;                                    // deplacement sur l'axe des Y
+void moveForward_XY(double distance,double angle,int direct_x,int direct_y);       // deplacement avec un angle   alpha
+int  moveBackward_X(double distance,int direct);
+int  moveBackward_Y(double distance,int direct);
+void moveBackward_XY(double distance,double angle,int direct_x,int direct_y);
+void turnLeft(double angle);                                                       // tourner a gauche 
+void turnRight(double angle);                                                     // tourner a droite
+void stop();                                                                     // arreter les moteurs
+void control_moteur(position p);            // algorithme de deplacement vers une coordonnées en changeant de trajectoire s'il rencontre un obstacle
+// ces fonctions sont utiliser dans control_moteur
+int op0(double xd,double yd);               // sequence d'action a suivre si le robot se trouve sur la direction des Y positifs
+int op1(double xd,double yd);               // sequence d'action a suivre si le robot se trouve sur la direction des X positifs
+int op2(double xd,double yd);               //sequence d'action a suivre si le robot se trouve sur la direction des Y negatifs
+int op3(double xd,double yd);               // sequence d'action a suivre si le robot se trouve sur la direction des X negatifs
+
+
+
+
+
+class PIDcontroller                        // Class pour creer des instances de controller PID
+{
+  private:
+  double Kp;
+  double Ki;
+  double Kd;
+  int sampleTime=200;
+  double *Input;                     //valeur mesurée
+  double *Setpoint;                  // consigne 
+  double integral=0;                 // la valeur du terme integral
+  double lastErr;                   // l'erreur precedente
+  double *output;                  // sortie du PID
+  unsigned long lastTime=millis();   //le dernier temps de calcul de PID
+  byte speed=10;                       // commande de vitesse (pwm)
+  byte lastspeed=10;                   // sauvegarde de la derniere vitesse calculée avec Setpwm
+  double outmax,outmin;              // valeur min et max de la sortie PID  
+  
+
+  public:
+  PIDcontroller(double *Input,double *output,double *Setpoint,double Kp,double Ki,double Kd)
+  :Input(Input),output(output),Setpoint(Setpoint),Kp(Kp),Ki(Ki),Kd(Kd) { lastErr=*Setpoint-*Input; SetOutputLimit(0, 255);}
+
+  byte Compute()
+  {
+      unsigned long now=millis();
+      int timeChange=(now -lastTime);
+      if(timeChange>=sampleTime)                    // echantillonnage
+      {
+        double error= *Setpoint -*Input;             // erreur 
+
+        integral+=Ki*error;                         // valeur integral
+
+        double dErr=error-lastErr;                  // derivée de l'erreur
+
+        *output=Kp*error + integral + Kd*dErr;      // sortie
+        if(*output<=outmin)                        // fixe la sortie a sortie min quand elle est inferieur a sortie min
+        {
+          *output=outmin;
+        } 
+        if(*output>=outmax)                      // fixe la sortie a sortie max  quand elle depasse
+        {
+          *output=outmax;
+        }
+
+        lastTime=now;                             
+        lastErr=error;                     // sauvegarde de l'erreur
+         return this->SetPWM();            //donc ici on calcul et retourne la vitesse dans la l'echantillonnage                       
+      }
+      return lastspeed;                   // et en dehors de l'echantillonnage ,on retourne la derniere vitesse calculer
+  }
+
+  byte SetPWM(){                      // gestion de la vitesse(pwm) en fonction de la sortie
+    if(*output>=outmax*2/3)           // quand on est a  plus de 2/3 de la sortie max
+    {
+      if(speed+8>=MAX_SPEED)               // la vitesse max etant de 160 
+      {
+        speed=MAX_SPEED;
+        
+      }
+      else                             // on augmente progressivement la vitesse tant qu'on atteint la vitesse max
+      speed+=8;
+        
+    }
+    else if(*output>=outmax/3)      // quand la sortie est entre 2/3 et 1/3 de la sortie max
+    {                                 
+                                       // on fait rien on laisse la vitesse qu'elle avait avant
+    } 
+    else if(*output>0) {             //quand la sortie est entre 0 et 1/3
+       if(speed-40<=0)               //si la vitesse est inferieur a 40
+       {
+        if((*Setpoint-*Input)>=error)  //  si on a une erreur superieur a "error"
+          speed=40;                  // on maintient la vitesse  a 40
+        else
+          speed=0;                 // sinon on s'arrete
+       }
+       else                        // si la vitesse est superieur a 40 
+        speed-=8;                  // on decremente la vitesse de 10
+    }
+   
+    lastspeed=speed;   // ici le lastspeed onus permet de garder une memoire de la vitesse 
+    return speed;       // on retourne la vitesse
+  }   
+                               // methode pour gerer la vitesse en fonction de la sortie de PID
+
+  void SetSampleTime(int NewSampleTime)             // modifier l'echantillonnage
+  {
+    if(NewSampleTime>0)
+    {
+      double ratio=(double)NewSampleTime/(double)sampleTime;
+      Ki*=ratio;
+      Kd/=ratio;
+      sampleTime=(unsigned long )NewSampleTime;
+    }
+  }
+  void SetOutputLimit(int min ,int max)               // les limites de sorties de PID
+  {                                                  // cette fonction est appelée apres chaque changement de consigne 
+    if(min>max) return;
+    outmax=max;
+    outmin=min;
+
+  }
+  void Clear_speed(void)
+  {
+    
+    speed=10;                                  //reinitialise la vitesse
+  }
+};
+
+
+
+// PID pour les deux moteurs
+
+PIDcontroller myPID1(&distance1,&output1,&consigne1,P,I,D);                  //PID controller pour moteur1
+PIDcontroller myPID2(&distance2,&output2,&consigne2,P,I,D);                  //PID controller pour moteur2
+NewPing capteur(TRIG_PIN_FRONT,ECHO_PIN_FRONT,500);                        // creation de l'objet capteur pour le capteur1 
+NewPing capteur1(TRIG_PIN_FRONT1,ECHO_PIN_FRONT1,500);                       // creation de l'objet capteur pour le capteur2
+ 
+ 
+//servo moteur 
+Servo servo;
+// differentes coordonnées
+position pos1={0,125},pos2={170,20},plant1={80,95},plant2={120,95},plant3={66,145},plant4={152,145},plant5={0,130};
+
+
+void setup() {
+  
+  Serial.begin(9600);
+  // mise en place  du mapping des entrées et sorties
+
+  pinMode(MOTOR_PIN_DIRECT1,OUTPUT);
+  pinMode(MOTOR_PIN_DIRECT2,OUTPUT);
+
+  pinMode(MOTOR_PIN_SPEED1,OUTPUT);
+  pinMode(MOTOR_PIN_SPEED2,OUTPUT);
+  
+  pinMode(encode1_pinA,INPUT);
+  pinMode(encode2_pinA,INPUT);
+  myPID1.SetOutputLimit(0, consigne1*3/2);             // en prenant en compte les parametres P,I et D j'ai remarqué que la sortie 
+  myPID2.SetOutputLimit(0, consigne2*3/2);             // maximale ne depasse pas 3/2 de la consigne 
+
+  servo.attach(21);                                                         //attacher le pin 7 a la sortie servomoteur
+
+  attachInterrupt(digitalPinToInterrupt(encode1_pinA),encode1,RISING);    // interruption sur l'encodeurA du moteur1 pour compter les ticks
+  attachInterrupt(digitalPinToInterrupt(encode2_pinA),encode2,RISING);    // interruption sur l'encodeurA du moteur 2 pour compter les ticks
+  
+}
+
+
+int i=0;
+byte p1=0,p2=0;
+void loop() {
+  servo_open();                                       // deploiement de l'aile 
+
+  moveForward_XY(125,0,1,1);                          // avancer et faire tourner  4 panneaux 
+
+  turnRight(135);                                     // tourner  a droite 
+
+  servo_close();                                      // replier l'aile
+
+  moveForward_XY(180,55,1,0);                         // ramasser le premier lot de six plantes du coté jaune   et les deposés
+ 
+  moveBackward_XY(180,55,0,1);                       // revenir a la position d'avant
+  
+   turnLeft(35);                                      // tourner a gauche
+
+  moveForward_XY(90,90,1,1);                        // avancer vers le second lot de plantes du coté jaune
+
+  turnRight(53);                                     // tourner vers les plantes
+
+  moveForward_XY(110,30,1,0);                        // avancer vers la meme zone qu'avant pour y deposer les plantes
+
+  moveBackward_XY(15,30,0,1);                       // recule un peu 
+
+  turnLeft(62);                                     // puis tourne pour se positionner parallement a l'axe des X
+
+  moveBackward_XY(8,90,0,1);                        // reculer un peu
+
+  turnLeft(90);                                     // puis tourner vers l'axe des Y vers la zone adverse 
+
+  moveForward_XY(80,0,1,1);                         // avancer vers le lot de plante du milieu
+
+  turnLeft(15);                                     // tourner un peu pour se positionner vers la zone de depot
+
+  moveForward_XY(160,40,0,1);                    // avancer vers la zone pour y deposer les plantes
+
+   stop();                                          // Et enfin s'arreter
+  delay(300000);
+}
+
+
+
+
+
+
+
+
+int  moveForward_X(double distance,int direct) {                                   // fonction marche avant suivant l'axe des abscisses avec le sens
+ 
+  int obstacle=0;                                                                             // direct==1 dans les x positifs et direct==0 dans le sens des x negatifs
+  digitalWrite(MOTOR_PIN_DIRECT1,LOW);
+  digitalWrite(MOTOR_PIN_DIRECT2,HIGH);
+  consigne1=distance;
+  consigne2=distance;
+  byte p1=0,p2=0;
+  double old_distance=0;
+  myPID1.SetOutputLimit(0, consigne1*3/2);
+  myPID2.SetOutputLimit(0, consigne2*3/2);
+  myPID1.Clear_speed();
+  myPID2.Clear_speed();
+  while((consigne1-distance1)>=error && (consigne2-distance2)>=error)    // on avance tant que les erreur sur les deux moteur sont < a error
+  {
+    p1=myPID1.Compute();
+    p2=myPID2.Compute();
+    if(distance1>distance2)            // s'il y'a une distance d'un des moteurs superieur a l'autre, on augmente la vitesse de l'autre
+    {
+      p2+=v_add;
+    }
+    else if(distance2>distance1)
+    p1+=v_add;
+  
+    analogWrite(MOTOR_PIN_SPEED1,p1);
+    analogWrite(MOTOR_PIN_SPEED2,p2);
+    if(direct)                         // verifie si on avance dans le sens des x positif si direct=1 et 0 sinon
+    xr+= distance1-old_distance;    // vers les x positif donc  on  incremente x
+    else
+    xr-= distance1 -old_distance;   // vers les x negatifs donc  on incremente x
+
+    old_distance=distance1;
+    Serial.print("x:");
+    Serial.print(xr);
+    Serial.print(", y: ");
+    Serial.print(yr);
+    Serial.print(", angle: ");
+    Serial.println(Or);
+   // delay(20);
+    
+    capteur_distance=capteur.ping_cm();
+    capteur_distance1=capteur1.ping_cm();
+    if((capteur_distance<=MIN_DISTANCE_SENSOR && capteur_distance>0) ||(capteur_distance1<=MIN_DISTANCE_SENSOR && capteur_distance1>0))   // on verifie s'il y'a un obstacle
+    {
+      obstacle=1;    // si oui on arrete le deplacement 
+      break;
+
+    }
+    Serial.print("capteur:");
+    Serial.println(capteur_distance);
+  }
+  stop();
+    Serial.print("capteur:");
+    Serial.println(capteur_distance);
+  
+  stop();
+  
+  distance1=0;distance2=0; encodeur1A=0;encodeur2A=0;
+  return obstacle;
+}                                                         // le code est pratiquement le meme pour la fonction de deplacement sur l'axe des Y
+
+
+int moveForward_Y(double distance,int direct)                                     // fonction marche avant suivant l'axe des ordonnées  avec le sens
+{
+    int obstacle=0;                                                                                 // direct==1 dans les y positifs et direct==0 dans le sens des y negatifs
+   digitalWrite(MOTOR_PIN_DIRECT1,LOW);
+  digitalWrite(MOTOR_PIN_DIRECT2,HIGH);
+  consigne1=distance;
+  consigne2=distance;
+  byte p1=0,p2=0;
+ double old_distance=0;
+  myPID1.SetOutputLimit(0, consigne1*3/2);
+  myPID2.SetOutputLimit(0, consigne2*3/2);
+   myPID1.Clear_speed();
+  myPID2.Clear_speed();
+  while((consigne1-distance1)>=error && (consigne2-distance2)>=error)
+  {
+    p1=myPID1.Compute();                               // calcul de vitesse du robot par le pid
+    p2=myPID2.Compute();
+    if(distance1>distance2)
+    {
+      p2+=v_add;                                         // on augmente la vitesse du moteur2 si le moteur1 parcours plus de distance
+    }
+    else if(distance2>distance1)
+    p1+=v_add;                                           // dans le cas contraire on augmente celle du moteur1
+
+    analogWrite(MOTOR_PIN_SPEED1,p1);                    
+    analogWrite(MOTOR_PIN_SPEED2,p2);
+    
+    if(direct)
+    yr+=distance1-old_distance;                      // si on va dans les y positifs on augmente y
+    else
+    yr-=distance1-old_distance;                    // sinon on diminue y
+    old_distance=distance1;                        //sauvegarder la distance parcourue
+    Serial.print("x:");
+    Serial.print(xr);
+    Serial.print(", y: ");
+    Serial.print(yr);
+    Serial.print(", angle: ");
+    Serial.print(Or);
+    capteur_distance=capteur.ping_cm();
+    capteur_distance1=capteur1.ping_cm();
+    // on verifie qu'il n'y a pas d'obstacle
+    if((capteur_distance<=MIN_DISTANCE_SENSOR && capteur_distance>0) ||(capteur_distance1<=MIN_DISTANCE_SENSOR && capteur_distance1>0))
+    {
+      obstacle=1;              // si oui on arrete le deplacement et on met 1 dans obstacle
+      break;
+      
+
+    }
+    Serial.print("capteur:");
+    Serial.println(capteur_distance);
+  }
+  stop();
+  
+  distance1=0;distance2=0; encodeur1A=0;encodeur2A=0;            // on reinitialise toutes les variables lié a la distance
+  return obstacle;            // on retourne obstacle
+
+}
+
+void moveForward_XY(double distance,double angle,int direct_x,int direct_y)            // deplacement oblique avec un angle 
+{
+    int obstacle=0;                                                                                 // direct_y==1 dans les y positifs et direct_y==0 dans le sens des y negatifs
+   digitalWrite(MOTOR_PIN_DIRECT1,LOW);                                                             // meme chose pour direct_x
+  digitalWrite(MOTOR_PIN_DIRECT2,HIGH);                                         
+  consigne1=distance;//sqrt(pow(pos.x-xr,2)+pow(pos.y-yr,2));
+  consigne2= distance;//sqrt(pow(pos.x-xr,2)+pow(pos.y-yr,2));
+  byte p1=0,p2=0;
+ double old_distance=0;
+  myPID1.SetOutputLimit(0, consigne1*3/2);
+  myPID2.SetOutputLimit(0, consigne2*3/2);
+   myPID1.Clear_speed();
+  myPID2.Clear_speed();
+  while((consigne1-distance1)>=error && (consigne2-distance2)>=error)
+  {
+    p1=myPID1.Compute();                             // calcule de la vitesse a partir du pid 
+    p2=myPID2.Compute();
+    if(distance1>distance2)
+    {
+      p2+=v_add;                                   // on augmente la vitesse du moteur 2 si le moteur1 a parcouru plus de distance 
+    }                          
+    else if(distance2>distance1)
+    p1+=v_add;                                    // dans le cas contraire  on augmente la vitesse du moteur1
+    analogWrite(MOTOR_PIN_SPEED1,p1);
+    analogWrite(MOTOR_PIN_SPEED2,p2);
+    
+    if(direct_y)
+    yr+=(distance1-old_distance)*cos(angle*pi/180);          // on augmente la distance parcourue  suivant y si on va vers les y positifs
+    else
+    yr-=(distance1-old_distance)*cos(angle*pi/180);          // on diminue la distance parcourue  suivant y si on va vers les  y negatifs
+
+    if(direct_x)
+    xr+=(distance1-old_distance)*sin(angle*pi/180);          // on augmente la distance parcourue  suivant y si on va vers les x positifs
+    else
+    xr-=(distance1-old_distance)*sin(angle*pi/180);          // on augmente la distance parcourue  suivant y si on va vers les x negatifs
+    old_distance=distance1;
+
+    
+    Serial.print("x:");
+    Serial.print(xr);
+    Serial.print(", y: ");
+    Serial.print(yr);
+    Serial.print(", angle: ");
+    Serial.print(Or);
+    capteur_distance=capteur.ping_cm();
+    capteur_distance1=capteur1.ping_cm();
+    if((capteur_distance<=MIN_DISTANCE_SENSOR && capteur_distance>0) ||(capteur_distance1<=MIN_DISTANCE_SENSOR && capteur_distance1>0))
+    {
+                                                                         // pour les deplacment sur des trajectoires oblique on s'arrete et on attend
+      consigne1=consigne1-distance1;                                      // quand on rencontre un obstacle
+      consigne2=consigne2-distance2;
+      distance1=0;distance2=0; encodeur1A=0;encodeur2A=0;
+       myPID1.Clear_speed();
+       myPID2.Clear_speed();
+       myPID1.SetOutputLimit(0, consigne1*3/2);
+       myPID2.SetOutputLimit(0, consigne2*3/2);
+
+      while((capteur_distance<=MIN_DISTANCE_SENSOR && capteur_distance>0) ||(capteur_distance1<=MIN_DISTANCE_SENSOR && capteur_distance1>0))
+      {
+        stop();
+        delay(50);
+        capteur_distance=capteur.ping_cm();
+        capteur_distance1=capteur1.ping_cm();
+      }
+
+    }
+    Serial.print("capteur:");
+    Serial.println(capteur_distance);
+  }
+  stop();
+  
+  distance1=0;distance2=0; encodeur1A=0;encodeur2A=0;
+  
+}
+
+void moveBackward_XY(double distance,double angle,int direct_x,int direct_y)   // fonction marche arriere  suivant xy
+{
+    int obstacle=0;                                                                                 // direct_y==1 dans les y positifs et direct_y==0 dans le sens des y negatifs
+   digitalWrite(MOTOR_PIN_DIRECT1,HIGH);                                                            // de meme pour direct_x
+  digitalWrite(MOTOR_PIN_DIRECT2,LOW);
+  consigne1=distance;
+  consigne2= distance;
+  byte p1=0,p2=0;
+ double old_distance=0;
+  myPID1.SetOutputLimit(0, consigne1*3/2);
+  myPID2.SetOutputLimit(0, consigne2*3/2);
+   myPID1.Clear_speed();
+  myPID2.Clear_speed();
+  while((consigne1-distance1)>=error && (consigne2-distance2)>=error)
+  {
+    p1=myPID1.Compute();
+    p2=myPID2.Compute();
+    if(distance1>distance2)
+    {
+      p2+=v_add;
+    }
+    else if(distance2>distance1)
+    p1+=v_add;
+    analogWrite(MOTOR_PIN_SPEED1,p1);
+    analogWrite(MOTOR_PIN_SPEED2,p2);
+    
+    if(direct_y)
+    yr+=(distance1-old_distance)*cos(angle*pi/180);
+    else
+    yr-=(distance1-old_distance)*cos(angle*pi/180);
+
+    if(direct_x)
+    xr+=(distance1-old_distance)*sin(angle*pi/180);
+    else
+    xr-=(distance1-old_distance)*sin(angle*pi/180);
+    old_distance=distance1;
+
+    
+    Serial.print("x:");
+    Serial.print(xr);
+    Serial.print(", y: ");
+    Serial.print(yr);
+    Serial.print(", angle: ");
+    Serial.print(Or);
+    
+    Serial.print("capteur:");
+    Serial.println(capteur_distance);
+  }
+  stop();
+  
+  distance1=0;distance2=0; encodeur1A=0;encodeur2A=0;
+  
+}
+int  moveBackward_X(double distance,int direct) {                                   // fonction marche avant suivant l'axe des abscisses avec le sens
+ 
+  int obstacle=0;                                                                             // direct==1 dans les x positifs et direct==0 dans le sens des x negatifs
+  digitalWrite(MOTOR_PIN_DIRECT1,HIGH);
+  digitalWrite(MOTOR_PIN_DIRECT2,LOW);
+  consigne1=distance;
+  consigne2=distance;
+  byte p1=0,p2=0;
+  double old_distance=0;
+  myPID1.SetOutputLimit(0, consigne1*3/2);
+  myPID2.SetOutputLimit(0, consigne2*3/2);
+  myPID1.Clear_speed();
+  myPID2.Clear_speed();
+  while((consigne1-distance1)>=error && (consigne2-distance2)>=error)    // on avance tant que les erreur sur les deux moteur sont < a error
+  {
+    p1=myPID1.Compute();
+    p2=myPID2.Compute();
+    if(distance1>distance2)            // s'il y'a une distance d'un des moteurs superieur a l'autre, on augmente la vitesse de l'autre
+    {
+      p2+=v_add;
+    }
+    else if(distance2>distance1)
+    p1+=v_add;
+  
+    analogWrite(MOTOR_PIN_SPEED1,p1);
+    analogWrite(MOTOR_PIN_SPEED2,p2);
+    if(direct)                         // verifie si on avance dans le sens des x positif si direct=1 et 0 sinon
+    xr+= distance1-old_distance;    // vers les x positif donc  on  incremente x
+    else
+    xr-= distance1 -old_distance;   // vers les x negatifs donc  on incremente x
+
+    old_distance=distance1;
+    Serial.print("x:");
+    Serial.print(xr);
+    Serial.print(", y: ");
+    Serial.print(yr);
+    Serial.print(", angle: ");
+    Serial.println(Or);
+   // delay(20);
+    
+    capteur_distance=capteur.ping_cm();
+    capteur_distance1=capteur1.ping_cm();
+    if((capteur_distance<=MIN_DISTANCE_SENSOR && capteur_distance>0) ||(capteur_distance1<=MIN_DISTANCE_SENSOR && capteur_distance1>0))
+    {
+      obstacle=1;                   // on arrete le mouvement et on met 1 dans obstacle pour signifier qu'on a rencontré un obstacle
+      break;
+
+    }
+    Serial.print("capteur:");
+    Serial.println(capteur_distance);
+  }
+  stop();
+  
+  distance1=0;distance2=0; encodeur1A=0;encodeur2A=0;
+  return obstacle;                     // on retourne obstacle
+}  
+int moveBackward_Y(double distance,int direct)                                     // fonction marche avant suivant l'axe des ordonnées  avec le sens
+{
+    int obstacle=0;                                                                                 // direct==1 dans les y positifs et direct==0 dans le sens des y negatifs
+   digitalWrite(MOTOR_PIN_DIRECT1,HIGH);
+  digitalWrite(MOTOR_PIN_DIRECT2,LOW);
+  consigne1=distance;
+  consigne2=distance;
+  byte p1=0,p2=0;
+ double old_distance=0;
+  myPID1.SetOutputLimit(0, consigne1*3/2);
+  myPID2.SetOutputLimit(0, consigne2*3/2);
+   myPID1.Clear_speed();
+  myPID2.Clear_speed();
+  while((consigne1-distance1)>=error && (consigne2-distance2)>=error)
+  {
+    p1=myPID1.Compute();
+    p2=myPID2.Compute();
+    if(distance1>distance2)
+    {
+      p2+=v_add;
+    }
+    else if(distance2>distance1)
+    p1+=v_add;
+    analogWrite(MOTOR_PIN_SPEED1,p1);
+    analogWrite(MOTOR_PIN_SPEED2,p2);
+    
+    if(direct)
+    yr+=distance1-old_distance;
+    else
+    yr-=distance1-old_distance;
+    old_distance=distance1;
+    Serial.print("x:");
+    Serial.print(xr);
+    Serial.print(", y: ");
+    Serial.print(yr);
+    Serial.print(", angle: ");
+    Serial.print(Or);
+    capteur_distance=capteur.ping_cm();
+    capteur_distance1=capteur1.ping_cm();
+    if((capteur_distance<=MIN_DISTANCE_SENSOR && capteur_distance>0) ||(capteur_distance1<=MIN_DISTANCE_SENSOR && capteur_distance1>0))
+    {
+      obstacle=1;
+      break;
+
+    }
+    Serial.print("capteur:");
+    Serial.println(capteur_distance);
+  }
+  stop();
+  
+  distance1=0;distance2=0; encodeur1A=0;encodeur2A=0;
+  return obstacle;
+
+}                     
+                  
+
+
+
+void turnRight(double angle) {                                 //fonction pour tourner a droite avec des angle entre [-180;180] degré
+  
+  digitalWrite(MOTOR_PIN_DIRECT1,LOW);          
+  digitalWrite(MOTOR_PIN_DIRECT2,LOW);
+  consigne1=angle/degre_per_cm;
+  consigne2=angle/degre_per_cm;
+  byte p1=0,p2=0;
+  double old_distance=0;
+  myPID1.SetOutputLimit(0, consigne1*3/2);                    
+  myPID2.SetOutputLimit(0, consigne2*3/2);
+  myPID1.Clear_speed();
+  myPID2.Clear_speed();
+  while((consigne1-distance1)>=error && (consigne2-distance2)>=error)
+  {
+    p1=myPID1.Compute();
+    p2=myPID2.Compute();
+    if(distance1>distance2)
+    {
+      p2+=5;
+    }
+    else if(distance2>distance1)
+    p1+=5;
+    analogWrite(MOTOR_PIN_SPEED1,p1);
+    analogWrite(MOTOR_PIN_SPEED2,p2);
+    Or-=(distance1-old_distance)*degre_per_cm;
+    old_distance=distance1;
+    //Or+=(distance1-old_distance)*degre_per_cm;
+    
+    //old_distance=distance1;
+    capteur_distance=capteur.ping_cm();
+    capteur_distance1=capteur1.ping_cm();
+    // on s'arrete   de tourner des qu'on rencontre un obstacle et on attend qu'il passe
+    if((capteur_distance<=MIN_DISTANCE_SENSOR && capteur_distance>0) ||(capteur_distance1<=MIN_DISTANCE_SENSOR && capteur_distance1>0))
+    {
+      consigne1=consigne1-distance1;
+      consigne2=consigne2-distance2;
+      Or+=(distance1-old_distance)*degre_per_cm;
+      old_distance=0;
+      distance1=0;distance2=0; encodeur1A=0;encodeur2A=0;
+       myPID1.Clear_speed();
+       myPID2.Clear_speed();
+       myPID1.SetOutputLimit(0, consigne1*3/2);
+       myPID2.SetOutputLimit(0, consigne2*3/2);
+      
+
+      while((capteur_distance<=MIN_DISTANCE_SENSOR && capteur_distance>0) ||(capteur_distance1<=MIN_DISTANCE_SENSOR && capteur_distance1>0))
+      {
+        stop();
+        delay(50);
+        capteur_distance=capteur.ping_cm();
+        capteur_distance1=capteur1.ping_cm();
+      }
+
+    }
+    
+    
+  }
+  Or+=(distance1-old_distance)*degre_per_cm;             // incremente a la fin l'angle  qu'on a tourné
+  stop();
+  delay(30);
+  if(Or>180)
+    { Or-=360;}
+  distance1=0;distance2=0; encodeur1A=0;encodeur2A=0;
+}
+
+void turnLeft(double angle) {                                 // fonction pour tourner a gauche  avec des angle entre [-180;180] degré
+  digitalWrite(MOTOR_PIN_DIRECT1,HIGH);
+  digitalWrite(MOTOR_PIN_DIRECT2,HIGH);
+
+  consigne1=angle/degre_per_cm;
+  consigne2=angle/degre_per_cm;
+  byte p1=0,p2=0;
+  double old_distance=0;
+  myPID1.SetOutputLimit(0, consigne1*3/2);
+  myPID2.SetOutputLimit(0, consigne2*3/2);
+  myPID1.Clear_speed();
+  myPID2.Clear_speed();
+  while((consigne1-distance1)>=error && (consigne2-distance2)>=error)
+  {
+    p1=myPID1.Compute();
+    p2=myPID2.Compute();
+    if(distance1>distance2)
+    {
+      p2+=5;
+    }
+    else if(distance2>distance1)
+    p1+=5;
+    analogWrite(MOTOR_PIN_SPEED1,p1);
+    analogWrite(MOTOR_PIN_SPEED2,p2);
+    Or-=(distance1-old_distance)*degre_per_cm;
+    old_distance=distance1;
+    capteur_distance=capteur.ping_cm();
+    capteur_distance1=capteur1.ping_cm();
+
+    // on s'arrete   de tourner des qu'on rencontre un obstacle et on attend qu'il passe
+    if((capteur_distance<=MIN_DISTANCE_SENSOR && capteur_distance>0) ||(capteur_distance1<=MIN_DISTANCE_SENSOR && capteur_distance1>0))
+    {
+      consigne1=consigne1-distance1;
+      consigne2=consigne2-distance2;
+      Or+=(distance1-old_distance)*degre_per_cm;
+      old_distance=0;
+      distance1=0;distance2=0; encodeur1A=0;encodeur2A=0;
+       myPID1.Clear_speed();
+       myPID2.Clear_speed();
+       myPID1.SetOutputLimit(0, consigne1*3/2);
+       myPID2.SetOutputLimit(0, consigne2*3/2);
+      
+
+      while((capteur_distance<=MIN_DISTANCE_SENSOR && capteur_distance>0) ||(capteur_distance1<=MIN_DISTANCE_SENSOR && capteur_distance1>0))
+      {
+        stop();
+        delay(50);
+        capteur_distance=capteur.ping_cm();
+        capteur_distance1=capteur1.ping_cm();
+      }
+
+    }
+    
+  }
+  stop();
+   Or-=(distance1-old_distance)*degre_per_cm;
+  if(Or<=-180)
+    Or+=360;
+  distance1=0;distance2=0; encodeur1A=0;encodeur2A=0;
+}
+
+void stop() {                                                         // arrete les moteurs
+ 
+  
+  analogWrite(MOTOR_PIN_SPEED1,0);
+  analogWrite(MOTOR_PIN_SPEED2,0);
+  double time=millis();
+  while(millis()-time<=100);
+ 
+}
+
+
+
+
+void servo_open()                                                   // fonction de deploiement de l'aile pour tourner les panneaux
+{
+  for(int j=280;j>=0;j--)
+  {
+    servo.write(j);
+    delay(10);
+  }
+}
+
+void servo_close()                                                // fonction de repliement
+{
+  for(int j=0;j<=280;j++)        
+  {
+    servo.write(j);
+    delay(10);
+  }
+}
+
+
+void control_moteur(position p)   // deplace le robot vers (xd,yd)
+{  // on verifie dans quelle position est le robot puis on execute le code correspondant
+   int obstacle=0;
+   if(abs(Or)<=10)                  //  si le robot est en direction des Y positifs
+   {  Or=0;
+      obstacle=op0(p.x,p.y);
+   }
+   else if(abs(Or-90)<=13)          //  si le robot est en direction des X positifs
+   {
+      Or=90;
+      obstacle=op1(p.x,p.y);
+   }
+   else if(abs(abs(Or)-180)<=13)   //  si le robot est en direction des Y negatifs
+   {
+      Or=180;
+      obstacle=op2(p.x,p.y);
+   } 
+   else                            //  si le robot est en direction des X  negatifs
+   {   
+      Or=-90;
+      obstacle=op3(p.x,p.y);
+   }
+   if(obstacle==1)                          // si un obstacle a été rencontrer et contourné
+   { 
+        control_moteur(p);                  // on continue vers la destination
+   }
+}
+
+
+void encode1(void)                                               // fonction  interruption pour encodeur1A
+{
+  
+  if(digitalRead(encode1_pinB)==HIGH)                            // si le moteur 1 avance
+  encodeur1A++;
+  else                                                           // si il  recule
+  encodeur1A--;
+   
+   
+   tour_r1=encodeur1A/Tick_per_rev1;                             // nombre de tour de la roue 1
+   distance1=abs(perimetre_roue*tour_r1);                      // distance de la roue en cm*/   
+}
+
+
+void encode2(void)                                              // fonction  interruption pour encodeur2A
+{
+   if(digitalRead(encode2_pinB)==HIGH)                          // si le moteur 2 avance
+  encodeur2A++;
+  else                                                          // si il  recule
+   encodeur2A--;
+   
+   tour_r2=encodeur2A/Tick_per_rev1;                            // nombre de tour de la roue 2
+   distance2=  abs(perimetre_roue*tour_r2);                      // distance de la roue en cm
+   moyenne_distance=(distance1+distance2)/2;
+   
+}
+
+void lireDistance(void)                  // lecture du capteur ultrason
+{
+  capteur_distance=capteur.ping_cm();  
+  Serial.print("Capteur : ");
+  Serial.println(capteur_distance);  
+}
+
+int op0(double xd,double yd)                         // dans le cas ou le robot est dans un angle de 0 degré
+{
+    if(xd>xr)
+      {
+        if(yd>yr)                        //dans le cas ou la destination est au dessus et a droite
+        {
+          if(moveForward_Y(yd-yr,1)==1)
+          {
+            turnRight(90);
+            
+            return 1;
+          }        // on avance  en haut jusqu'a la hauteur de la destination
+          turnRight(90);                // on tourne a droite de 90 degré
+          if(moveForward_X(xd-xr,1)==1)      // puis on avance vers la droite jusqu'a atteindre la destination
+          {
+            turnLeft(90);                           // code a effectuer pour eviter l'obstacle selon les situations
+            control_moteur((position){xr,yr-20});
+            return 1;
+          }
+        }                               // et c'est de maniere analogue pour la suite
+        else if(yd<yr)
+        {
+          turnRight(90);
+          if(moveForward_X(xd-xr,1)==1)
+          { 
+            turnRight(90);                             // code a effectuer pour eviter l'obstacle selon les situations
+           
+            return 1;
+          }
+          turnRight(90);
+          if(moveForward_Y(yr-yd,0)==1) 
+          {
+            turnRight(90);
+            control_moteur((position){xr-20,yr});       // code a effectuer pour eviter l'obstacle selon les situations
+            return 1;
+          }
+        }
+        else
+        {
+          turnRight(90);
+          if(moveForward_X(xd-xr,1)==1)
+          { 
+            if(yr<20) 
+            {
+              turnLeft(90);
+              control_moteur((position){xr,yr+20});                // code a effectuer pour eviter l'obstacle selon les situations
+            }
+            else 
+            {
+              turnRight(90);
+              control_moteur((position){xr,yr-20});            // code a effectuer pour eviter l'obstacle selon les situations
+            }
+
+
+            return 1;
+          }
+        }
+      }
+      else if(xd<xr)
+      {
+        if(yd>yr)
+        {
+          if(moveForward_Y(yd-yr,1)==1) 
+          {
+            turnLeft(90);                     // code a effectuer pour eviter l'obstacle selon les situations
+                                  
+            return 1;
+          }
+            turnLeft(90);
+          if(moveForward_X(xr-xd,0)==1) 
+          {
+            turnLeft(90);
+            control_moteur((position){xr,yr-20});                // code a effectuer pour eviter l'obstacle selon les situations
+            return 1;
+          }
+        }
+        else if(yd<yr)
+        {
+          turnLeft(90);
+          if(moveForward_X(xr-xd,0)==1) 
+          {  
+            turnLeft(90);                                    // code a effectuer pour eviter l'obstacle selon les situations
+            
+            return 1;
+          }
+             turnLeft(90);
+          if (moveForward_Y(yr-yd,0)==1) 
+          {
+            turnLeft(90);
+            control_moteur((position){xr+20,yr});                  // code a effectuer pour eviter l'obstacle selon les situations
+            return 1;
+          }
+        }
+        else
+        {
+          turnLeft(90);
+          if(moveForward_X(xr-xd,0)==1) 
+          {  
+            if(yr<20)
+            {
+              turnRight(90);                                        // code a effectuer pour eviter l'obstacle selon les situations
+              control_moteur((position){xr,yr+20});
+            }
+            else {
+              turnLeft(90);
+              control_moteur((position){xr,yr-20});                 // code a effectuer pour eviter l'obstacle selon les situations
+            }  
+            return 1;
+          }
+        }
+      }
+      else {
+        if(yd>yr)
+        {
+          if(moveForward_Y(yd-yr,1)==1) 
+          {
+            if(xr<20)
+            {
+              turnRight(90);
+              control_moteur((position){xr+20,yr});                  // code a effectuer pour eviter l'obstacle selon les situations
+            }
+            else {
+              turnLeft(90);
+              control_moteur((position){xr-20,yr});                    // code a effectuer pour eviter l'obstacle selon les situations
+            }
+            return 1;
+          }
+          
+        }
+        else if(yd<yr)
+        {
+          turnRight(90);
+          turnRight(90);
+           if(moveForward_Y(yr-yd,0)==1) 
+           { if(xr<20)
+              {
+                turnLeft(90);
+               control_moteur((position){xr+20,yr});                 // code a effectuer pour eviter l'obstacle selon les situations
+              
+              }
+              else
+              {
+                turnRight(90);                  
+                control_moteur((position){xr-20,yr});               // code a effectuer pour eviter l'obstacle selon les situations
+              }
+            return 1;
+           }
+        }
+
+      }
+      return 0;
+}
+
+// fonctions  analogues a  op0();
+int op1(double xd,double yd)                                // cas ou le robot est dans un angle de 90
+{
+  if(xd>xr)
+  {
+    if(yd>yr)
+     {
+        if(moveForward_X(xd-xr,1)==1) 
+        {
+          turnLeft(90);
+          
+          return 1;
+        }
+        turnLeft(90);
+        if(moveForward_Y(yd-yr,1)==1)
+        { 
+          
+          return 1;
+        }
+     }
+     else if(yd<yr)
+     {
+        if(moveForward_X(xd-xr,1)==1)
+        { 
+          turnRight(90);
+          
+          return 1;
+        }
+        turnRight(90);
+        if(moveForward_Y(yr-yd,0)== 1) 
+        {
+          turnRight(90);
+          control_moteur((position){xr-20,yr});
+          return 1;
+        }
+     }
+     else {
+        if(moveForward_X(xd-xr,1)==1) 
+        {
+          if(yr<20)
+          {
+            turnLeft(90);
+            control_moteur((position){xr,yr+20});
+          }
+          else
+          {
+            turnRight(90);
+            control_moteur((position){xr,yr-20});
+          }
+          return 1;
+        }
+     }
+  }
+  else if(xd<xr)
+  {
+    if(yd>yr)
+    {
+      turnLeft(90);
+      if(moveForward_Y(yd-yr,1)==1) 
+      {
+        turnLeft(90);
+        
+        return 1;
+
+      }
+      turnLeft(90);
+      if(moveForward_X(xr-xd,0)==1) 
+      {
+        turnLeft(90);
+        control_moteur((position){xr,yr-20});
+        return 1;
+      }
+    }
+    else if(yd<yr)
+    {
+      turnRight(90);
+      if(moveForward_Y(yr-yd,0)==1) 
+      {
+        turnRight(90);
+        
+        return 1;
+      }
+      turnRight(90);
+      if(moveForward_X(xr-xd,0)==1)
+      {
+        turnRight(90);
+        control_moteur((position){xr,yr+20});
+        return 1;
+      }
+
+    }
+    else
+      {
+      turnLeft(90);
+      turnLeft(90);
+      if(moveForward_X(xr-xd,0)==1) 
+       {
+        if(yr<20)
+        {
+          turnRight(90);
+          control_moteur((position){xr,yr+20});
+        }
+        else {
+        turnLeft(90);
+        control_moteur((position){xr,yr-20});
+        }
+        return 1;
+       }
+      }
+  }
+  else
+  {
+    if(yd>yr)
+     {
+        
+        turnLeft(90);
+        if(moveForward_Y(yd-yr,1)==1) 
+        {
+          
+          return 1;
+        }
+     }
+     else if(yd<yr)
+     {
+        
+        turnRight(90);
+        if(moveForward_Y(yr-yd,0)==1) 
+        {
+          
+          return 1;
+        }
+     }
+  }
+  return 0;
+}
+
+int  op2(double xd,double yd)                                // cas ou le robot est dans un angle de 180
+{
+  if(xd>xr)
+  {
+    if(yd>yr)
+     {
+        turnLeft(90);
+        if(moveForward_X(xd-xr,1)==1) 
+        {
+          turnLeft(90);
+          
+          return 1;
+        }
+        turnLeft(90);
+        if(moveForward_Y(yd-yr,1)==1)
+        {
+          turnLeft(90);
+          control_moteur((position){xr-20,yr});
+           return 1;
+        }
+     }
+     else if(yd<yr)
+     {
+        if(moveForward_Y(yr-yd,0)==1) 
+        {
+          turnLeft(90);
+          
+          return 1;
+        }
+        turnLeft(90);
+        if(moveForward_X(xd-xr,1)==1) 
+        {
+          turnLeft(90);
+          control_moteur((position){xr,yr+20});
+          return 1;
+        }
+     }
+     else
+     {
+        turnLeft(90);
+        if(moveForward_X(xd-xr,1)==1) 
+        {
+          
+          
+          return 1;
+        }
+     }
+  }
+  else if(xd<xr)
+  {
+    if(yd>yr)
+    {
+      turnRight(90);
+      if(moveForward_X(xr-xd,0)==1) 
+      {
+        turnRight(90);
+        
+        return 1;
+      }
+      turnRight(90);
+      if(moveForward_Y(yd-yr,1)==1) 
+      {
+        turnRight(90);
+        control_moteur((position){xr+20,yr});
+        return 1;
+      }
+    }
+    else if(yd<yr)
+    {
+      if(moveForward_Y(yr-yd,0)==1) 
+      {
+        turnRight(90);
+        
+        return 1;
+      }
+      turnRight(90);
+      if(moveForward_X(xr-xd,0)==1) 
+      {
+        turnRight(90);
+        control_moteur((position){xr,yr+20});
+        return 1;
+      }
+    }
+    else
+    {
+        turnRight(90);
+       if(moveForward_X(xr-xd,0)==1) 
+       {
+        if(yr<20)
+        {
+          turnRight(90);
+          control_moteur((position){xr,yr+20});
+        }
+        else
+        {
+          turnLeft(90);
+          control_moteur((position){xr,yr-20});
+        }
+        return 1;
+       }
+    }
+  }
+  else {
+    if(yd>yr)
+     {
+        turnLeft(90);
+        turnLeft(90);
+        if(moveForward_Y(yd-yr,1)==1) 
+        {
+          
+          return 1;
+        }
+     }
+     else if(yd<yr)
+     {
+        if(moveForward_Y(yr-yd,0)==1) 
+        {
+          if(xr<20)
+          {
+            turnLeft(90);
+            control_moteur((position){xr+20,yr});
+          }
+          else
+          {
+            turnRight(90);
+            control_moteur((position){xr-20,yr});
+          }
+          return 1;
+        }
+        
+     }
+  }
+  return 0;
+}
+int op3(double xd,double yd)                                // cas ou le robot est dans un angle de -90 ou 270
+{
+  if(xd>xr)
+  {
+    if(yd>yr)
+     {
+        turnRight(90);
+        
+          
+        
+     }
+     else if(yd<yr)
+     {
+        turnLeft(90);
+        
+     }
+     else
+     {
+       turnRight(90);
+       
+     }
+  }
+  else if(xd<xr)
+  {
+    if(yd>yr)
+    {
+      if(moveForward_X(xr-xd,0)==1) 
+      {
+        turnRight(90);
+        
+        return 1;
+      }
+      turnRight(90);
+      
+    }
+    else if(yd<yr)
+    {
+      if(moveForward_X(xr-xd,0)==1) 
+      {
+        turnLeft(90);
+        
+        return 1;
+      }
+      turnLeft(90);
+      
+    }
+    else
+    {
+      if(moveForward_X(xr-xd,0)==1) return 1;
+    }
+  }
+  else {
+      if(yd>yr)
+     {
+        turnRight(90);
+       
+        
+     }
+     else if(yd<yr)
+     {
+        
+        turnLeft(90);
+        
+     }
+  }
+  return 0;
+}
+
+
